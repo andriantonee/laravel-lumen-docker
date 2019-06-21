@@ -1,0 +1,23 @@
+export CI_COMMIT_SHA=COMMIT_SHA_HASH && \
+export APP_NAME= && \
+export APP_ENV= && \
+export APP_KEY= && \
+export APP_DEBUG= && \
+export DB_CONNECTION= && \
+export DB_HOST= && \
+export DB_PORT= && \
+export DB_DATABASE= && \
+export DB_USERNAME= && \
+export DB_PASSWORD= && \
+export COMPOSE_FILE= && \
+export COMPOSE_PROJECT_NAME= && \
+export AWS_REGION= && \
+export AWS_SITE_APP_REPOSITORY= && \
+export AWS_WEB_SERVER_REPOSITORY= && \
+export ECS_CLUSTER=
+
+ecs-cli compose \
+    service up \
+    --target-group-arn FILL_YOUR_AWS_TARGET_GROUP_ARN \
+    --container-name webserver \
+    --container-port 80
