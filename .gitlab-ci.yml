@@ -1,0 +1,59 @@
+image: docker:latest
+
+services:
+  - docker:stable-dind
+
+stages:
+  - build
+  - deploy
+
+build:
+  script:
+    - docker version
+    - make build
+    - docker images
+    - make push
+  stage: build
+  before_script:
+    - |
+        apk add --update curl \
+          make
+    - curl -o /usr/local/bin/ecs-cli https://amazon-ecs-cli.s3.amazonaws.com/ecs-cli-linux-amd64-latest
+    - chmod +x /usr/local/bin/ecs-cli
+    - ecs-cli --version
+    - |
+        ecs-cli configure profile \
+          --access-key $AWS_ACCESS_KEY_ID \
+          --secret-key $AWS_SECRET_ACCESS_KEY
+  only:
+    refs:
+      - master
+
+deploy-production:
+  script:
+    - |
+        ecs-cli compose \
+          service up \
+          --target-group-arn FILL_WITH_YOUR_AWS_TARGET_GROUP_ARN \
+          --container-name webserver \
+          --container-port 80 \
+          --timeout 8
+  stage: deploy
+  before_script:
+    - apk add --update curl
+    - curl -o /usr/local/bin/ecs-cli https://amazon-ecs-cli.s3.amazonaws.com/ecs-cli-linux-amd64-latest
+    - chmod +x /usr/local/bin/ecs-cli
+    - export APP_ENV=production
+    - export APP_NAME="$APP_NAME $APP_ENV"
+    - export APP_DEBUG=false
+    - export ECS_CLUSTER=$APP_ENV
+    - ecs-cli --version
+    - |
+        ecs-cli configure profile \
+          --access-key $AWS_ACCESS_KEY_ID \
+          --secret-key $AWS_SECRET_ACCESS_KEY
+    - ecs-cli configure --default-launch-type FARGATE
+  only:
+    refs:
+      - master
+  when: manual
