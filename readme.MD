@@ -58,4 +58,4 @@ Gitlab CI/CD Jobs (deploy-production):
 Deploy manually:
 1. Install Docker Version: **18.09.6**
 2. Set [ENV](#list-env)
-3. Run **_deploy-dev_** script to run container
+3. Run **_deploy_** script to run container
