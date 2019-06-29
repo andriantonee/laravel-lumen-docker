@@ -7,9 +7,15 @@ services:
       target: composer
     container_name: siteapp
     tty: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     working_dir: /var/www
     volumes:
       - ./site-app:/var/www/site-app
+    user: ${DOCKER_USER:-0}
 
   webserver:
     build:
@@ -17,6 +23,11 @@ services:
       target: base
     container_name: webserver
     tty: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "80:80"
     volumes:

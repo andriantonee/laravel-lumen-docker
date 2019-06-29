@@ -1,36 +1,56 @@
-image: docker:latest
+.dind-master:
+  services:
+    - docker:stable-dind
+  before_script:
+    - apk add --update curl
+    - curl -o /usr/local/bin/ecs-cli https://amazon-ecs-cli.s3.amazonaws.com/ecs-cli-linux-amd64-latest
+    - chmod +x /usr/local/bin/ecs-cli
+    - ecs-cli --version
+    - |
+        ecs-cli configure profile \
+          --access-key $ECS_PROD_ACCESS_KEY_ID \
+          --secret-key $ECS_PROD_SECRET_ACCESS_KEY
 
-services:
-  - docker:stable-dind
+image: docker:latest
 
 stages:
   - build
   - deploy
 
 build:
+  extends: .dind-master
   script:
     - docker version
-    - make build
+    - export SITE_APP_IMG=${ECR_PROD_SITE_APP}:${CI_COMMIT_SHA}
+    - export WEB_SERVER_IMG=${ECR_PROD_WEB_SERVER}:${CI_COMMIT_SHA}
+    - docker build --tag ${SITE_APP_IMG} --target build ./site-app
+	  - docker build --tag ${WEB_SERVER_IMG} --target build .
     - docker images
-    - make push
+    - ecs-cli push ${SITE_APP_IMG}
+    - ecs-cli push ${WEB_SERVER_IMG}
   stage: build
-  before_script:
-    - |
-        apk add --update curl \
-          make
-    - curl -o /usr/local/bin/ecs-cli https://amazon-ecs-cli.s3.amazonaws.com/ecs-cli-linux-amd64-latest
-    - chmod +x /usr/local/bin/ecs-cli
-    - ecs-cli --version
-    - |
-        ecs-cli configure profile \
-          --access-key $AWS_ACCESS_KEY_ID \
-          --secret-key $AWS_SECRET_ACCESS_KEY
   only:
     refs:
       - master
 
 deploy-production:
+  extends: .dind-master
   script:
+    - export APP_ENV=production
+    - export APP_KEY=$ENV_PROD_APP_KEY
+    - export APP_DEBUG=true
+    - export APP_URL=$ENV_PROD_APP_URL
+    - export DB_CONNECTION=$ENV_PROD_DB_CONNECTION
+    - export DB_HOST=$ENV_PROD_DB_HOST
+    - export DB_PORT=$ENV_PROD_DB_PORT
+    - export DB_DATABASE=$ENV_PROD_DB_DATABASE
+    - export DB_USERNAME=$ENV_PROD_DB_USERNAME
+    - export DB_PASSWORD=$ENV_PROD_DB_PASSWORD
+    - export AWS_REGION=$ECS_PROD_REGION
+    - export COMPOSE_FILE=docker-compose.deploy.yml
+    - export COMPOSE_PROJECT_NAME="project-name-$APP_ENV"
+    - export ECS_CLUSTER=$APP_ENV
+    - ecs-cli configure --default-launch-type FARGATE
     - |
         ecs-cli compose \
           service up \
@@ -39,21 +59,36 @@ deploy-production:
           --container-port 80 \
           --timeout 8
   stage: deploy
-  before_script:
-    - apk add --update curl
-    - curl -o /usr/local/bin/ecs-cli https://amazon-ecs-cli.s3.amazonaws.com/ecs-cli-linux-amd64-latest
-    - chmod +x /usr/local/bin/ecs-cli
-    - export APP_ENV=production
-    - export APP_NAME="$APP_NAME $APP_ENV"
-    - export APP_DEBUG=false
-    - export ECS_CLUSTER=$APP_ENV
-    - ecs-cli --version
-    - |
-        ecs-cli configure profile \
-          --access-key $AWS_ACCESS_KEY_ID \
-          --secret-key $AWS_SECRET_ACCESS_KEY
-    - ecs-cli configure --default-launch-type FARGATE
   only:
     refs:
       - master
+  when: manual
+
+deploy-development:
+  script:
+    - |
+        ssh -o "StrictHostKeyChecking no" ${SSH_DEV_USER}@${SSH_DEV_URL} << EOF
+          export APP_NAME="$APP_NAME"
+          export APP_ENV=development
+          export APP_KEY=$ENV_DEV_APP_KEY
+          export APP_DEBUG=true
+          export APP_URL=$ENV_DEV_APP_URL
+          export DB_CONNECTION=$ENV_DEV_DB_CONNECTION
+          export DB_HOST=$ENV_DEV_DB_HOST
+          export DB_PORT=$ENV_DEV_DB_PORT
+          export DB_DATABASE=$ENV_DEV_DB_DATABASE
+          export DB_USERNAME=$ENV_DEV_DB_USERNAME
+          export DB_PASSWORD=$ENV_DEV_DB_PASSWORD
+          cd [FILL_WITH_FOLDER_DIRECTORY_ON_SSH_SERVER]
+          git pull
+          ./deploy
+        EOF
+  stage: deploy
+  before_script:
+    - 'which ssh-agent || (apk add --update openssh-client)'
+    - eval $(ssh-agent -s)
+    - echo "$SSH_DEV_PRIVATE_KEY" | ssh-add -
+  only:
+    refs:
+      - development
   when: manual

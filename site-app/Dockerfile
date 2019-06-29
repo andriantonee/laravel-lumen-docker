@@ -33,8 +33,8 @@ RUN composer install --no-dev
 
 FROM base AS build
 RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-COPY . /var/www/site-app
-COPY --from=deps /var/www/site-app/vendor /var/www/site-app/vendor
+COPY --chown=www-data . /var/www/site-app
+COPY --chown=www-data --from=deps /var/www/site-app/vendor /var/www/site-app/vendor
 WORKDIR /var/www/site-app
 RUN rm -rf public
-COPY public/.htaccess public/index.php /var/www/site-app/public/
+COPY --chown=www-data public/.htaccess public/index.php /var/www/site-app/public/
