@@ -1,15 +1,22 @@
-.dind-master:
+.dind-production:
   services:
     - docker:stable-dind
   before_script:
     - apk add --update curl
     - curl -o /usr/local/bin/ecs-cli https://amazon-ecs-cli.s3.amazonaws.com/ecs-cli-linux-amd64-latest
     - chmod +x /usr/local/bin/ecs-cli
-    - ecs-cli --version
     - |
         ecs-cli configure profile \
           --access-key $ECS_PROD_ACCESS_KEY_ID \
           --secret-key $ECS_PROD_SECRET_ACCESS_KEY
+    - export APP_ENV=production
+    - |
+        ecs-cli configure \
+          --cluster $APP_ENV \
+          --region $ECS_PROD_REGION \
+          --default-launch-type FARGATE
+    - export SITE_APP_IMG=${ECR_PROD_SITE_APP}:${CI_COMMIT_SHA}
+    - export WEB_SERVER_IMG=${ECR_PROD_WEB_SERVER}:${CI_COMMIT_SHA}
 
 image: docker:latest
 
@@ -18,14 +25,10 @@ stages:
   - deploy
 
 build:
-  extends: .dind-master
+  extends: .dind-production
   script:
-    - docker version
-    - export SITE_APP_IMG=${ECR_PROD_SITE_APP}:${CI_COMMIT_SHA}
-    - export WEB_SERVER_IMG=${ECR_PROD_WEB_SERVER}:${CI_COMMIT_SHA}
     - docker build --tag ${SITE_APP_IMG} --target build ./site-app
 	  - docker build --tag ${WEB_SERVER_IMG} --target build .
-    - docker images
     - ecs-cli push ${SITE_APP_IMG}
     - ecs-cli push ${WEB_SERVER_IMG}
   stage: build
@@ -33,55 +36,139 @@ build:
     refs:
       - master
 
-deploy-production:
-  extends: .dind-master
-  script:
-    - export APP_ENV=production
-    - export APP_KEY=$ENV_PROD_APP_KEY
-    - export APP_DEBUG=true
-    - export APP_URL=$ENV_PROD_APP_URL
-    - export DB_CONNECTION=$ENV_PROD_DB_CONNECTION
-    - export DB_HOST=$ENV_PROD_DB_HOST
-    - export DB_PORT=$ENV_PROD_DB_PORT
-    - export DB_DATABASE=$ENV_PROD_DB_DATABASE
-    - export DB_USERNAME=$ENV_PROD_DB_USERNAME
-    - export DB_PASSWORD=$ENV_PROD_DB_PASSWORD
-    - export AWS_REGION=$ECS_PROD_REGION
-    - export COMPOSE_FILE=docker-compose.deploy.yml
-    - export COMPOSE_PROJECT_NAME="project-name-$APP_ENV"
-    - export ECS_CLUSTER=$APP_ENV
-    - ecs-cli configure --default-launch-type FARGATE
-    - |
-        ecs-cli compose \
-          service up \
-          --target-group-arn FILL_WITH_YOUR_AWS_TARGET_GROUP_ARN \
-          --container-name webserver \
-          --container-port 80 \
-          --timeout 8
-  stage: deploy
-  only:
-    refs:
-      - master
-  when: manual
-
 deploy-development:
   script:
+    # https://superuser.com/questions/125324/how-can-i-avoid-sshs-host-verification-for-known-hosts => How can I avoid SSH's host verification for known hosts?
+    # put \$ to escape translated when ssh to server
     - |
         ssh -o "StrictHostKeyChecking no" ${SSH_DEV_USER}@${SSH_DEV_URL} << EOF
-          export APP_NAME="$APP_NAME"
-          export APP_ENV=development
-          export APP_KEY=$ENV_DEV_APP_KEY
-          export APP_DEBUG=true
-          export APP_URL=$ENV_DEV_APP_URL
-          export DB_CONNECTION=$ENV_DEV_DB_CONNECTION
-          export DB_HOST=$ENV_DEV_DB_HOST
-          export DB_PORT=$ENV_DEV_DB_PORT
-          export DB_DATABASE=$ENV_DEV_DB_DATABASE
-          export DB_USERNAME=$ENV_DEV_DB_USERNAME
-          export DB_PASSWORD=$ENV_DEV_DB_PASSWORD
-          cd [FILL_WITH_FOLDER_DIRECTORY_ON_SSH_SERVER]
-          git pull
-          ./deploy
+          cd $SSH_DEV_PROJECT_PATH
+          git fetch
+          git reset --hard $CI_COMMIT_SHA
+
+          NETWORK_NAME=api-network
+
+          SITEAPP_NAME=api-siteapp
+          WEBSERVER_NAME=api-webserver
+
+          OLD_SITEAPP_EXISTS=false
+
+          SITEAPP_CONTAINER_NAME=\${SITEAPP_NAME}-container
+          OLD_SITEAPP_CONTAINER_NAME=old-\${SITEAPP_CONTAINER_NAME}
+          WEBSERVER_CONTAINER_NAME=\${WEBSERVER_NAME}-container
+
+          # ----- network -----
+
+          if [ ! "\$(docker network ls -q --filter name=^\${NETWORK_NAME}\$)" ]; then
+              echo "creating network \$NETWORK_NAME..."
+              docker network create \$NETWORK_NAME \
+                  --attachable
+          fi
+
+          # https://github.com/moby/moby/issues/20155 (Docker networks: expected behaviour when 2 containers have the same --net-alias)
+          # ----- siteapp -----
+
+          echo "building \$SITEAPP_NAME image..."
+          docker build --tag \$SITEAPP_NAME --target build ./site-app
+
+          echo "checking \$SITEAPP_CONTAINER_NAME..."
+          if [ "\$(docker ps -aq -f name=^/\${SITEAPP_CONTAINER_NAME}\$)" ]; then
+              OLD_SITEAPP_EXISTS=true
+
+              if [ "\$(docker ps -aq -f status=exited -f name=^/\${SITEAPP_CONTAINER_NAME}\$)" ]; then
+                  echo "removing \$SITEAPP_CONTAINER_NAME status=exited"
+                  docker rm \$SITEAPP_CONTAINER_NAME
+
+                  OLD_SITEAPP_EXISTS=false
+              fi
+          fi
+
+          if [ "\$OLD_SITEAPP_EXISTS" = true ]; then
+              echo "checking \$OLD_SITEAPP_CONTAINER_NAME..."
+              if [ "\$(docker ps -aq -f name=^/\${OLD_SITEAPP_CONTAINER_NAME}\$)" ]; then
+                  echo "stopping \$OLD_SITEAPP_CONTAINER_NAME..."
+                  docker stop \$OLD_SITEAPP_CONTAINER_NAME
+
+                  echo "removing \$OLD_SITEAPP_CONTAINER_NAME..."
+                  docker rm \$OLD_SITEAPP_CONTAINER_NAME
+              fi
+
+              echo "renaming \$SITEAPP_CONTAINER_NAME to \$OLD_SITEAPP_CONTAINER_NAME"
+              docker rename \$SITEAPP_CONTAINER_NAME \$OLD_SITEAPP_CONTAINER_NAME
+          fi
+
+          echo "creating \$SITEAPP_CONTAINER_NAME..."
+          docker run --detach \
+              --name \$SITEAPP_CONTAINER_NAME \
+              --log-driver json-file \
+              --log-opt max-size=10m \
+              --log-opt max-file=30 \
+              --network \$NETWORK_NAME \
+              --network-alias siteapp \
+              --restart always \
+              --env APP_NAME="$APP_NAME" \
+              --env APP_ENV=development \
+              --env APP_KEY="$ENV_DEV_APP_KEY" \
+              --env APP_DEBUG=true \
+              --env DB_CONNECTION="$ENV_DEV_DB_CONNECTION" \
+              --env DB_HOST="$ENV_DEV_DB_HOST" \
+              --env DB_PORT="$ENV_DEV_DB_PORT" \
+              --env DB_DATABASE="$ENV_DEV_DB_DATABASE" \
+              --env DB_USERNAME="$ENV_DEV_DB_USERNAME" \
+              --env DB_PASSWORD="$ENV_DEV_DB_PASSWORD" \
+              \$SITEAPP_NAME
+
+          # ----- webserver -----
+
+          echo "building \$WEBSERVER_NAME image..."
+          docker build --tag \$WEBSERVER_NAME --target base .
+
+          echo "checking \$WEBSERVER_CONTAINER_NAME..."
+          if [ "\$(docker ps -aq -f status=exited -f name=^/\${WEBSERVER_CONTAINER_NAME}\$)" ]; then
+              echo "removing \$WEBSERVER_CONTAINER_NAME status=exited"
+              docker rm \$WEBSERVER_CONTAINER_NAME
+          fi
+
+          if [ ! "\$(docker ps -aq -f name=^/\${WEBSERVER_CONTAINER_NAME}\$)" ]; then
+              echo "creating \$WEBSERVER_CONTAINER_NAME..."
+              docker run --detach \
+                  --name \$WEBSERVER_CONTAINER_NAME \
+                  --log-driver json-file \
+                  --log-opt max-size=10m \
+                  --log-opt max-file=30 \
+                  --network \$NETWORK_NAME \
+                  --network-alias webserver \
+                  --restart always \
+                  --publish 80:80 \
+                  --volume \$(pwd)/site-app/public:/var/www/site-app/public \
+                  --volume \$(pwd)/conf.d:/etc/nginx/conf.d \
+                  \$WEBSERVER_NAME
+          fi
+
+          # ----- old siteapp -----
+
+          if [ "\$OLD_SITEAPP_EXISTS" = true ]; then
+              echo "disconnecting \$OLD_SITEAPP_CONTAINER_NAME from \$NETWORK_NAME..."
+              docker network disconnect \$NETWORK_NAME \$OLD_SITEAPP_CONTAINER_NAME
+
+              echo "stopping \$OLD_SITEAPP_CONTAINER_NAME..."
+              docker stop \$OLD_SITEAPP_CONTAINER_NAME
+
+              echo "removing \$OLD_SITEAPP_CONTAINER_NAME..."
+              docker rm \$OLD_SITEAPP_CONTAINER_NAME
+          fi
+
+          # ----- restart nginx -----
+
+          echo "restarting nginx inside \$WEBSERVER_CONTAINER_NAME..."
+          docker exec \$WEBSERVER_CONTAINER_NAME nginx -s reload
+
+          # ----- cleaning image -----
+
+          # echo "cleaning old image..."
+          # docker image rm \$(docker images -q --filter dangling=true)
+
+          echo "deploy success..."
         EOF
   stage: deploy
   before_script:
@@ -91,4 +178,86 @@ deploy-development:
   only:
     refs:
       - development
+  when: manual
+
+deploy-production:
+  extends: .dind-production
+  script:
+    - export APP_DEBUG=false
+    - export ECS_COMPOSE_FILENAME=gitlab-ecs-compose-prod.yml
+    - export ECS_PARAMS_FILENAME=gitlab-ecs-params-prod.yml
+    - export ECS_PROJECT_NAME=${APP_NAME}-${APP_ENV}
+    - |
+        cat > $ECS_COMPOSE_FILENAME <<EOF
+          version: "3"
+          services:
+            siteapp:
+              image: "$SITE_APP_IMG"
+              environment:
+                APP_NAME: "$APP_NAME"
+                APP_ENV: "$APP_ENV"
+                APP_KEY: "$ENV_PROD_APP_KEY"
+                APP_DEBUG: "$APP_DEBUG"
+                DB_CONNECTION: "$ENV_PROD_DB_CONNECTION"
+                DB_HOST: "$ENV_PROD_DB_HOST"
+                DB_PORT: "$ENV_PROD_DB_PORT"
+                DB_DATABASE: "$ENV_PROD_DB_DATABASE"
+                DB_USERNAME: "$ENV_PROD_DB_USERNAME"
+                DB_PASSWORD: "$ENV_PROD_DB_PASSWORD"
+              logging:
+                driver: awslogs
+                options:
+                  awslogs-group: "$APP_NAME"
+                  awslogs-region: "$ECS_PROD_REGION"
+                  awslogs-stream-prefix: "$APP_ENV"
+            webserver:
+              image: "$WEB_SERVER_IMG"
+              ports:
+                - 80:80
+              logging:
+                driver: awslogs
+                options:
+                  awslogs-group: "$APP_NAME"
+                  awslogs-region: "$ECS_PROD_REGION"
+                  awslogs-stream-prefix: "$APP_ENV"
+        EOF
+    - |
+        cat > $ECS_PARAMS_FILENAME <<EOF
+          version: 1
+          task_definition:
+            task_execution_role: ecsTaskExecutionRole
+            ecs_network_mode: awsvpc
+            services:
+              siteapp:
+                cpu_shares: 192
+                mem_limit: 768m
+              webserver:
+                cpu_shares: 64
+                mem_limit: 256m
+            task_size:
+              cpu_limit: 256
+              mem_limit: 1024
+          run_params:
+            network_configuration:
+              awsvpc_configuration:
+                subnets:
+                  - $ECS_PROD_SUBNET_1
+                assign_public_ip: ENABLED
+        EOF
+    - |
+        ecs-cli \
+          compose \
+            --file $ECS_COMPOSE_FILENAME \
+            --project-name $ECS_PROJECT_NAME \
+            --ecs-params $ECS_PARAMS_FILENAME \
+          service up \
+            --target-group-arn $ECS_PROD_TARGET_GROUP_ARN \
+            --container-name webserver \
+            --container-port 80 \
+            --timeout 30 \
+            --create-log-groups
+  stage: deploy
+  only:
+    refs:
+      - master
   when: manual

@@ -29,7 +29,7 @@ services:
         max-size: "10m"
         max-file: "3"
     ports:
-      - "80:80"
+      - "${DOCKER_HOST:-80}:80"
     volumes:
       - ./conf.d:/etc/nginx/conf.d
       - ./site-app:/var/www/site-app

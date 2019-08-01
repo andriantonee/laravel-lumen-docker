@@ -18,6 +18,7 @@
             "Action": [
                 "cloudwatch:DeleteAlarms",
                 "events:PutRule",
+                "logs:CreateLogGroup",
                 "ecs:DeregisterTaskDefinition",
                 "cloudwatch:PutMetricAlarm",
                 "events:PutTargets",
