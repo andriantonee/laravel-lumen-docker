@@ -4,7 +4,7 @@ services:
   siteapp:
     build:
       context: ./site-app
-      target: composer
+      target: base
     container_name: siteapp
     tty: true
     logging:

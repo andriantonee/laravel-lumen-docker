@@ -11,21 +11,19 @@
 * DB_USERNAME
 * DB_PASSWORD
 
-# Develops
+# Development
 
 Config:
 
 1. Copy .env.example and rename it to .env
 2. Modify .env with your own environment
-3. If project location is outside of the root folder (for local development only):
-
-	by default DOCKER_USER=0
+3. If project location is outside of the root folder (for local development only):  
+	by default `DOCKER_USER=0`
     ```
     export DOCKER_USER=$(id -u):$(id -g)
     ```
-4. To change docker host:
-
-	by default DOCKER_HOST=80
+4. To change docker host:  
+	by default `DOCKER_HOST=80`
 	```
 	export DOCKER_HOST=xxxx
 	```
