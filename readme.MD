@@ -90,3 +90,6 @@ Gitlab CI/CD Jobs (build and deploy-production):
 	* ECS_PROD_SUBNET_1 (if you want to add more subnet, you need to modify the gitlab.ci.yml config)
 	* ECS_PROD_TARGET_GROUP_ARN
 4. Every push to branch master will create a new pipeline (build will be executed automatically, to deploy production you need to trigger the deploy-production job manually)
+
+
+SENPAI TEACH DEVOPS PLS!
